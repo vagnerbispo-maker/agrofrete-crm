@@ -651,6 +651,12 @@ document.querySelectorAll(".segment").forEach((button) => {
   });
 });
 
+document.querySelectorAll(".modal-close").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelector(`#${button.dataset.closeDialog}`).close();
+  });
+});
+
 elements.globalSearch.addEventListener("input", render);
 elements.statusFilter.addEventListener("change", renderKanban);
 

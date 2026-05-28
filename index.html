@@ -175,7 +175,7 @@
       <form method="dialog" id="orderForm" class="modal-form">
         <div class="modal-head">
           <h2>Nova carga</h2>
-          <button class="ghost" value="cancel" type="submit" title="Fechar">×</button>
+          <button class="ghost modal-close" type="button" data-close-dialog="orderDialog" title="Fechar">×</button>
         </div>
         <div class="form-grid">
           <label>Cliente<input name="client" required placeholder="Fazenda Boa Safra"></label>
@@ -208,7 +208,7 @@
       <form method="dialog" id="clientForm" class="modal-form">
         <div class="modal-head">
           <h2>Novo cliente</h2>
-          <button class="ghost" value="cancel" type="submit" title="Fechar">×</button>
+          <button class="ghost modal-close" type="button" data-close-dialog="clientDialog" title="Fechar">×</button>
         </div>
         <div class="form-grid">
           <label>Cliente<input name="name" required></label>
