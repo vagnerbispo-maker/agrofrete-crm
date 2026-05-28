@@ -1,4 +1,7 @@
 const STORAGE_KEY = "agrofrete-crm-v1";
+const SUPABASE_URL = "https://xognohpweahpremggfhy.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhvZ25vaHB3ZWFocHJlbWdnZmh5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5Nzc0MzksImV4cCI6MjA5NTU1MzQzOX0.7AmUQf5i_DKWWeyStkhIohTKutddjBLxrTi7YkgU_e8";
+const USE_SUPABASE = true;
 const statuses = ["Cotacao", "Aprovado", "Em transito", "Entregue", "Faturado"];
 let priorityFilter = "todas";
 
@@ -153,6 +156,135 @@ let data = loadData();
 
 function saveData() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+async function supabaseRequest(table, options = {}) {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}${options.query || ""}`, {
+    method: options.method || "GET",
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: options.prefer || "return=representation"
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Supabase ${table}: ${message}`);
+  }
+
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+function clientFromDb(row) {
+  return {
+    dbId: row.id,
+    name: row.nome,
+    contact: row.contato || "",
+    origin: row.origem || "",
+    product: row.produto || "",
+    risk: row.risco || "Baixo"
+  };
+}
+
+function orderFromDb(row) {
+  return {
+    dbId: row.id,
+    id: row.codigo || `FR-${row.id}`,
+    client: row.cliente,
+    product: row.produto,
+    origin: row.origem,
+    destination: row.destino,
+    tons: Number(row.toneladas || 0),
+    pickup: row.coleta,
+    status: row.status || "Cotacao",
+    priority: row.prioridade || "Normal",
+    revenue: Number(row.receita || 0),
+    cost: Number(row.custo || 0),
+    driver: row.motorista || "A definir",
+    vehicle: row.veiculo || "A definir",
+    progress: Number(row.progresso || progressForStatus(row.status || "Cotacao"))
+  };
+}
+
+function clientToDb(client) {
+  return {
+    nome: client.name,
+    contato: client.contact,
+    origem: client.origin,
+    produto: client.product,
+    risco: client.risk
+  };
+}
+
+function orderToDb(order) {
+  return {
+    codigo: order.id,
+    cliente: order.client,
+    produto: order.product,
+    origem: order.origin,
+    destino: order.destination,
+    toneladas: order.tons,
+    coleta: order.pickup,
+    status: order.status,
+    prioridade: order.priority,
+    receita: order.revenue,
+    custo: order.cost,
+    motorista: order.driver,
+    veiculo: order.vehicle,
+    progresso: order.progress
+  };
+}
+
+async function loadFromSupabase() {
+  const [clients, orders] = await Promise.all([
+    supabaseRequest("clientes", { query: "?select=*&order=id.desc" }),
+    supabaseRequest("cargas", { query: "?select=*&order=id.desc" })
+  ]);
+
+  data = {
+    clients: clients.map(clientFromDb),
+    orders: orders.map(orderFromDb)
+  };
+
+  if (!data.clients.length && !data.orders.length) {
+    await seedSupabase();
+    return loadFromSupabase();
+  }
+
+  saveData();
+}
+
+async function seedSupabase() {
+  await Promise.all([
+    supabaseRequest("clientes", { method: "POST", body: seedData.clients.map(clientToDb) }),
+    supabaseRequest("cargas", { method: "POST", body: seedData.orders.map(orderToDb) })
+  ]);
+}
+
+async function saveOrderToSupabase(order) {
+  const [created] = await supabaseRequest("cargas", { method: "POST", body: orderToDb(order) });
+  return orderFromDb(created);
+}
+
+async function saveClientToSupabase(client) {
+  const [created] = await supabaseRequest("clientes", { method: "POST", body: clientToDb(client) });
+  return clientFromDb(created);
+}
+
+async function updateOrderStatusInSupabase(order) {
+  if (!order.dbId) return;
+  await supabaseRequest("cargas", {
+    method: "PATCH",
+    query: `?id=eq.${order.dbId}`,
+    body: {
+      status: order.status,
+      progresso: order.progress
+    }
+  });
 }
 
 function currency(value) {
@@ -397,10 +529,15 @@ function renderOrders() {
     .join("");
 
   document.querySelectorAll(".status-select").forEach((select) => {
-    select.addEventListener("change", (event) => {
+    select.addEventListener("change", async (event) => {
       const order = data.orders.find((item) => item.id === event.target.dataset.id);
       order.status = event.target.value;
       order.progress = progressForStatus(order.status);
+      try {
+        if (USE_SUPABASE) await updateOrderStatusInSupabase(order);
+      } catch (error) {
+        alert("Nao foi possivel atualizar o status no Supabase. Verifique as permissoes da tabela cargas.");
+      }
       saveData();
       render();
     });
@@ -534,7 +671,7 @@ document.querySelector("#seedBtn").addEventListener("click", () => {
   render();
 });
 
-elements.orderForm.addEventListener("submit", (event) => {
+elements.orderForm.addEventListener("submit", async (event) => {
   if (event.submitter?.value === "cancel") return;
   const form = new FormData(elements.orderForm);
   const order = Object.fromEntries(form.entries());
@@ -543,7 +680,7 @@ elements.orderForm.addEventListener("submit", (event) => {
   const revenue = Math.round(numericTons * 390 + 1800);
   const cost = Math.round(revenue * 0.78);
 
-  data.orders.unshift({
+  const newOrder = {
     ...order,
     id,
     tons: numericTons,
@@ -552,16 +689,31 @@ elements.orderForm.addEventListener("submit", (event) => {
     driver: "A definir",
     vehicle: "A definir",
     progress: progressForStatus(order.status)
-  });
+  };
+
+  try {
+    data.orders.unshift(USE_SUPABASE ? await saveOrderToSupabase(newOrder) : newOrder);
+  } catch (error) {
+    data.orders.unshift(newOrder);
+    alert("A carga foi salva apenas neste navegador. O Supabase recusou a gravacao.");
+  }
+
   saveData();
   elements.orderForm.reset();
   render();
 });
 
-elements.clientForm.addEventListener("submit", (event) => {
+elements.clientForm.addEventListener("submit", async (event) => {
   if (event.submitter?.value === "cancel") return;
   const client = Object.fromEntries(new FormData(elements.clientForm).entries());
-  data.clients.unshift(client);
+
+  try {
+    data.clients.unshift(USE_SUPABASE ? await saveClientToSupabase(client) : client);
+  } catch (error) {
+    data.clients.unshift(client);
+    alert("O cliente foi salvo apenas neste navegador. O Supabase recusou a gravacao.");
+  }
+
   saveData();
   elements.clientForm.reset();
   render();
@@ -601,4 +753,16 @@ document.querySelector("#exportBtn").addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
-render();
+async function init() {
+  if (USE_SUPABASE) {
+    try {
+      await loadFromSupabase();
+    } catch (error) {
+      alert("Nao foi possivel conectar ao Supabase. O CRM abriu com os dados locais deste navegador.");
+    }
+  }
+
+  render();
+}
+
+init();
